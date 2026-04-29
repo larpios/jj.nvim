@@ -370,6 +370,51 @@ function M.get_all_bookmarks()
 	return bookmarks
 end
 
+--- Get unique base bookmark names from a string of space-separated bookmarks.
+--- Strips asterisks, strips @remote, and deduplicates.
+--- @param bookmark_str string
+--- @return string[] Unique base bookmark names
+function M.parse_bookmark_names(bookmark_str)
+	local raw_items = vim.split(bookmark_str, "%s+", { trimempty = true })
+	local unique_names = {}
+	local seen = {}
+
+	for _, item in ipairs(raw_items) do
+		-- Strip asterisks and @remote
+		local base_name = item:gsub("%*", ""):gsub("@.*$", "")
+		if base_name ~= "" and not seen[base_name] then
+			table.insert(unique_names, base_name)
+			seen[base_name] = true
+		end
+	end
+
+	return unique_names
+end
+
+--- Get unique base bookmark names for a given revset
+--- @param revset string
+--- @return string[]|nil ret List of bookmarks, or nil on failure
+function M.get_bookmarks_for_rev(revset)
+	-- Use the optimal native template to strip active/remote indicators automatically
+	local cmd = string.format(
+		"jj log -r %s -T 'bookmarks.map(|b| b.name()).join(\" \")' --no-graph",
+		vim.fn.shellescape(revset)
+	)
+
+	local output, success = require("jj.core.runner").execute_command(
+		cmd,
+		string.format("Error retrieving bookmark for `%s`", revset),
+		nil,
+		false
+	)
+
+	if not success or not output then
+		return nil
+	end
+
+	return M.parse_bookmark_names(output)
+end
+
 --- Get all tags in a repository
 --- @return string[] List of bookmarks, or empty list if none found
 function M.get_all_tags()
@@ -562,6 +607,31 @@ function M.is_change_empty(revset)
 	end
 
 	return vim.trim(output) == "true"
+end
+
+--- Check if a bookmark is marked as deleted locally
+--- @param bookmark string The bookmark name
+--- @return boolean is_deleted True if deleted locally, false otherwise
+function M.is_bookmark_deleted(bookmark)
+	local cmd = string.format(
+		"jj bookmark list -a exact:%s -T 'self.present() ++ \"\\n\"' --quiet",
+		vim.fn.shellescape(bookmark)
+	)
+
+	local output, success = runner.execute_command(cmd, "Error checking bookmark status", nil, true)
+
+	if not success or not output then
+		return false
+	end
+
+	-- If any line in the output is "false", it means the bookmark is missing locally
+	for _, line in ipairs(vim.split(output, "\n", { trimempty = true })) do
+		if vim.trim(line) == "false" then
+			return true
+		end
+	end
+
+	return false
 end
 
 --- Build describe text for a given revision
