@@ -298,32 +298,52 @@ end
 
 --- Build the jj log command string from options
 --- @param opts? jj.cmd.log_opts Optional command options
---- @return string The full jj log command
+--- @return string[] cmd_args The full jj log command
 function M.build_log_cmd(opts)
-	local jj_cmd = "jj log --no-pager"
 	local merged_opts = vim.tbl_extend("force", default_log_opts, opts or {})
+	local cmd_args = { "jj", "log", "--no-pager" }
 
-	if merged_opts.raw_flags then
-		-- Strip --no-pager from raw_flags since it's already in the base command
-		local flags = vim.trim(merged_opts.raw_flags:gsub("%-%-no%-pager", ""):gsub("%s+", " "))
-		if flags ~= "" then
-			return string.format("%s %s", jj_cmd, flags)
-		end
-		return jj_cmd
-	end
+	-- Add template override to show (deleted) for bookmarks missing local tracking
+	local bookmark_format =
+		'bookmarks.map(|b| label("bookmarks", b.name() ++ if(b.remote(), "@" ++ b.remote()) ++ if(b.remote() && !b.tracking_present(), " (deleted)"))).join(" ")'
+	local header_format = 'label(if(commit.current_working_copy(), "working_copy"), format_short_change_id(commit.change_id())) ++ " " ++ commit.author().email() ++ " " ++ format_timestamp(commit.committer().timestamp()) ++ " " ++ '
+		.. bookmark_format
+		.. ' ++ " " ++ format_short_commit_id(commit.commit_id())'
+
+	local config_arg =
+		string.format('template-aliases."format_short_commit_header(commit)"=%s', vim.fn.json_encode(header_format))
+
+	table.insert(cmd_args, "--config")
+	table.insert(cmd_args, config_arg)
 
 	for key, value in pairs(merged_opts) do
-		key = key:gsub("_", "-")
-		if key == "limit" and value then
-			jj_cmd = string.format("%s --%s %d", jj_cmd, key, value)
-		elseif key == "revisions" and value then
-			jj_cmd = string.format("%s --%s %s", jj_cmd, key, value)
-		elseif value then
-			jj_cmd = string.format("%s --%s", jj_cmd, key)
+		if key ~= "raw_flags" then
+			local flag = key:gsub("_", "-")
+			if key == "limit" and value then
+				table.insert(cmd_args, "--" .. flag)
+				table.insert(cmd_args, tostring(value))
+			elseif key == "revisions" and value then
+				table.insert(cmd_args, "--" .. flag)
+				table.insert(cmd_args, value)
+			elseif type(value) == "boolean" and value then
+				table.insert(cmd_args, "--" .. flag)
+			end
 		end
 	end
 
-	return jj_cmd
+	if merged_opts.raw_flags then
+		-- Strip --no-pager since it's already in the base command
+		local flags = vim.trim(merged_opts.raw_flags:gsub("%-%-no%-pager", ""):gsub("%s+", " "))
+		if flags ~= "" then
+			-- Split raw flags by space and append individually
+			local raw_list = vim.split(flags, "%s+", { trimempty = true })
+			for _, flag in ipairs(raw_list) do
+				table.insert(cmd_args, flag)
+			end
+		end
+	end
+
+	return cmd_args
 end
 
 --- Jujutsu log
@@ -640,7 +660,7 @@ function M.handle_log_push_bookmark()
 
 	-- If there are multiple bookmarks user must choose
 	if #bookmarks > 1 then
-        --- @type {name: string, is_deleted: boolean}
+		--- @type {name: string, is_deleted: boolean}
 		local options = {}
 		for _, name in ipairs(bookmarks) do
 			table.insert(options, { name = name, is_deleted = utils.is_bookmark_deleted(name) })
